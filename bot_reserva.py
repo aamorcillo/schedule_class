@@ -1,10 +1,12 @@
-# bot_reserva.py (versión para GitHub Actions)
+# bot_reserva.py (versión final con tiempo de reserva parametrizable)
 
 import os
 import time
 from datetime import datetime, timedelta
+from math import ceil
 
 from selenium import webdriver
+from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
@@ -13,105 +15,105 @@ from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 
 # --- CONFIGURACIÓN ---
-# Los datos ahora se leen desde los "Secrets" de GitHub
+# Lista de nombres de clase a buscar.
+TARGET_CLASS_NAMES = ["FIT CAMP", "BOX-FIT", "FULL BODY"]
+TARGET_CLASS_TIME = "10:00"
+
+# ¡NUEVO! Define con cuántas horas de antelación se abren las reservas.
+# Ejemplos: 36 para thfit.cl, 24 si fuera un día antes, etc.
+BOOKING_WINDOW_HOURS = 27
+
+# Credenciales desde los Secrets de GitHub
 USER_EMAIL = os.getenv("THFIT_USER")
 USER_PASSWORD = os.getenv("THFIT_PASS")
-
-TARGET_CLASS_NAME = "FIT CAMP"
-TARGET_CLASS_TIME = "10:00"
-TARGET_WEEKDAY = 2  # 0=Lunes, 1=Martes, 2=Miércoles, etc.
 # --------------------
 
 LOGIN_URL = "https://thfit.cl/reservar"
 
-# (El resto de las funciones calculate_booking_time y run_booking_bot son iguales,
-# pero run_booking_bot necesita la configuración del modo headless)
+def get_target_date():
+    """
+    Calcula la fecha objetivo basándose en las horas de antelación.
+    Ej: 24h -> mañana (1 día). 36h -> pasado mañana (2 días).
+    """
+    days_to_look_ahead = ceil(BOOKING_WINDOW_HOURS / 24)
+    target_date = (datetime.now() + timedelta(days=days_to_look_ahead)).date()
+    return target_date
 
 def run_booking_bot():
     """Inicia el proceso de automatización para reservar la clase."""
     
-    booking_open_time, target_date = calculate_booking_time()
+    target_date = get_target_date()
 
-    print(f"✅ Bot configurado para la clase '{TARGET_CLASS_NAME}' del {target_date.strftime('%A, %d de %B')}.")
-    print(f"⏳ El proceso de reserva comenzará automáticamente a las: {booking_open_time.strftime('%H:%M:%S del %A')}.")
+    print(f"✅ Bot configurado para buscar clases el día: {target_date.strftime('%A, %d de %B')}.", flush=True)
+    print(f"⏳ Buscando una de las clases: {TARGET_CLASS_NAMES} a las {TARGET_CLASS_TIME}.", flush=True)
+    print(f"   (Considerando una ventana de reserva de {BOOKING_WINDOW_HOURS} horas)", flush=True)
     
-    while datetime.now() < booking_open_time:
-        print(f"Esperando... Hora actual: {datetime.now().strftime('%H:%M:%S')}", end='\r')
-        time.sleep(30)
-
-    print("\n💥 ¡Hora de reservar! Iniciando el navegador en modo headless...")
-    
-    # --- Configuración para modo headless en GitHub Actions ---
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
-    # -----------------------------------------------------------
-
+    
     driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
-    driver.get(LOGIN_URL)
     wait = WebDriverWait(driver, 20)
 
     try:
-        # El resto del código de la función es exactamente el mismo...
-        print("1. Buscando el formulario de inicio de sesión...")
+        driver.get(LOGIN_URL)
+        print("1. Buscando el formulario de inicio de sesión...", flush=True)
         iframe = wait.until(EC.presence_of_element_located((By.TAG_NAME, "iframe")))
         driver.switch_to.frame(iframe)
 
-        print("2. Ingresando credenciales...")
-        email_input = wait.until(EC.presence_of_element_located((By.ID, "username")))
-        email_input.send_keys(USER_EMAIL)
-        
-        password_input = driver.find_element(By.ID, "password")
-        password_input.send_keys(USER_PASSWORD)
-        
+        print("2. Ingresando credenciales...", flush=True)
+        wait.until(EC.presence_of_element_located((By.ID, "username"))).send_keys(USER_EMAIL)
+        driver.find_element(By.ID, "password").send_keys(USER_PASSWORD)
         driver.find_element(By.ID, "login-button").click()
-        print("   -> Sesión iniciada.")
+        print("   -> Sesión iniciada.", flush=True)
         
         wait.until(EC.presence_of_element_located((By.ID, "classSchedule-mainTable")))
         
-        print("3. Navegando al día correcto...")
-        today_on_calendar_str = driver.find_element(By.CLASS_NAME, "headText").get_attribute('textContent').strip()
-        today_on_calendar = datetime.strptime(today_on_calendar_str, '%A, %B %d, %Y').date()
+        print(f"3. Navegando hasta el día {target_date.strftime('%A, %d de %B')}...", flush=True)
         
-        while today_on_calendar < target_date:
+        while True:
+            current_date_str = driver.find_element(By.CLASS_NAME, "headText").get_attribute('textContent').strip()
+            current_date = datetime.strptime(current_date_str, '%A, %B %d, %Y').date()
+            if current_date >= target_date:
+                print(f"   -> Navegación exitosa.", flush=True)
+                break
             driver.find_element(By.CLASS_NAME, "primary-button--arrow-right").click()
             time.sleep(1)
-            today_on_calendar_str = driver.find_element(By.CLASS_NAME, "headText").get_attribute('textContent').strip()
-            today_on_calendar = datetime.strptime(today_on_calendar_str, '%A, %B %d, %Y').date()
 
-        print(f"   -> Navegación exitosa al {target_date.strftime('%A, %d de %B')}.")
+        class_found = False
+        for class_name in TARGET_CLASS_NAMES:
+            try:
+                print(f"   -> Intentando con '{class_name}'...", flush=True)
+                reserve_button_xpath = f"//tr[.//span[text()='{class_name}'] and .//span[contains(text(), '{TARGET_CLASS_TIME}')]]//input[contains(@value, 'Sign Up Now')]"
+                reserve_button = driver.find_element(By.XPATH, reserve_button_xpath)
+                
+                if reserve_button.is_enabled():
+                    print(f"   -> ¡Clase '{class_name}' encontrada! Realizando la reserva...", flush=True)
+                    reserve_button.click()
+                    class_found = True
+                    break
+                else:
+                    print(f"   -> Clase '{class_name}' encontrada pero no se puede reservar.", flush=True)
+            except NoSuchElementException:
+                print(f"   -> Clase '{class_name}' no encontrada.", flush=True)
+                continue
 
-        print(f"4. Buscando la clase '{TARGET_CLASS_NAME}' a las {TARGET_CLASS_TIME}...")
-        reserve_button_xpath = f"//tr[.//span[text()='{TARGET_CLASS_NAME}'] and .//span[contains(text(), '{TARGET_CLASS_TIME}')]]//input[contains(@value, 'Sign Up Now')]"
-        reserve_button = wait.until(EC.element_to_be_clickable((By.XPATH, reserve_button_xpath)))
-
-        print("   -> ¡Clase encontrada! Realizando la reserva...")
-        reserve_button.click()
-        
-        print("\n🎉 ¡ÉXITO! Tu clase ha sido reservada (o el primer paso se completó).")
+        if class_found:
+            print("\n🎉 ¡ÉXITO! Tu clase ha sido reservada.", flush=True)
+        else:
+            print("\n❌ FALLO: No se encontró ninguna de las clases deseadas o no estaban disponibles.", flush=True)
 
     except Exception as e:
-        print(f"\n❌ ERROR: No se pudo completar la reserva. Motivo: {e}")
-        driver.save_screenshot('error_screenshot.png') # Guarda una captura para depurar
+        print(f"\n❌ ERROR GENERAL: No se pudo completar la reserva. Motivo: {e}", flush=True)
+        driver.save_screenshot('error_screenshot.png')
     finally:
-        print("Cerrando bot.")
+        print("Cerrando bot.", flush=True)
         driver.quit()
-
-# (La función calculate_booking_time se mantiene igual que en el script original)
-def calculate_booking_time():
-    now = datetime.now()
-    days_ahead = (TARGET_WEEKDAY - now.weekday() + 7) % 7
-    if days_ahead == 0 and now.hour >= int(TARGET_CLASS_TIME.split(':')[0]):
-        days_ahead = 7
-    target_class_date = now + timedelta(days=days_ahead)
-    target_class_datetime = target_class_date.replace(hour=int(TARGET_CLASS_TIME.split(':')[0]), minute=0, second=0, microsecond=0)
-    booking_open_time = target_class_datetime - timedelta(hours=36)
-    return booking_open_time, target_class_datetime.date()
 
 if __name__ == "__main__":
     if not USER_EMAIL or not USER_PASSWORD:
-        print("❌ Error: Las credenciales THFIT_USER y THFIT_PASS no están configuradas en los Secrets de GitHub.")
+        print("❌ Error: Las credenciales THFIT_USER y THFIT_PASS no están configuradas en los Secrets de GitHub.", flush=True)
     else:
         run_booking_bot()
