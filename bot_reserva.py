@@ -1,6 +1,7 @@
-# bot_reserva.py (versión final con tiempo de reserva parametrizable)
+# bot_reserva.py (versión con arranque de navegador robusto)
 
 import os
+import sys
 import time
 from datetime import datetime, timedelta
 from math import ceil
@@ -15,15 +16,11 @@ from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 
 # --- CONFIGURACIÓN ---
-# Lista de nombres de clase a buscar.
 TARGET_CLASS_NAMES = ["FIT CAMP", "BOX-FIT", "FULL BODY"]
 TARGET_CLASS_TIME = "10:00"
-
-# ¡NUEVO! Define con cuántas horas de antelación se abren las reservas.
-# Ejemplos: 36 para thfit.cl, 24 si fuera un día antes, etc.
 BOOKING_WINDOW_HOURS = 27
+BOOKING_OPEN_TIME_LOCAL = 10
 
-# Credenciales desde los Secrets de GitHub
 USER_EMAIL = os.getenv("THFIT_USER")
 USER_PASSWORD = os.getenv("THFIT_PASS")
 # --------------------
@@ -31,35 +28,43 @@ USER_PASSWORD = os.getenv("THFIT_PASS")
 LOGIN_URL = "https://thfit.cl/reservar"
 
 def get_target_date():
-    """
-    Calcula la fecha objetivo basándose en las horas de antelación.
-    Ej: 24h -> mañana (1 día). 36h -> pasado mañana (2 días).
-    """
     days_to_look_ahead = ceil(BOOKING_WINDOW_HOURS / 24)
     target_date = (datetime.now() + timedelta(days=days_to_look_ahead)).date()
     return target_date
 
 def run_booking_bot():
-    """Inicia el proceso de automatización para reservar la clase."""
-    
-    target_date = get_target_date()
+    now = datetime.now()
+    booking_time_today = now.replace(hour=BOOKING_OPEN_TIME_LOCAL, minute=0, second=0, microsecond=0)
 
-    print(f"✅ Bot configurado para buscar clases el día: {target_date.strftime('%A, %d de %B')}.", flush=True)
-    print(f"⏳ Buscando una de las clases: {TARGET_CLASS_NAMES} a las {TARGET_CLASS_TIME}.", flush=True)
-    print(f"   (Considerando una ventana de reserva de {BOOKING_WINDOW_HOURS} horas)", flush=True)
+    print(f"✅ Bot iniciado a las {now.strftime('%H:%M:%S')}.")
+    if now < booking_time_today:
+        print(f"⏳ Esperando hasta las {booking_time_today.strftime('%H:%M:%S')} para iniciar la reserva...")
+        while datetime.now() < booking_time_today:
+            remaining = booking_time_today - datetime.now()
+            print(f"   -> Tiempo restante: {str(remaining).split('.')[0]}", flush=True)
+            time.sleep(30)
+    
+    print("\n💥 ¡Hora de reservar! Configurando el navegador...", flush=True)
     
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    # --- NUEVO ARGUMENTO PARA ESTABILIDAD ---
+    options.add_argument("--disable-gpu") 
     options.add_argument("--window-size=1920,1080")
     
-    driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
-    wait = WebDriverWait(driver, 20)
-
+    # --- NUEVOS MENSAJES DE DIAGNÓSTICO ---
+    print("   -> Opciones de Chrome configuradas. Intentando iniciar el driver...", flush=True)
+    driver = None # Inicializar driver a None
     try:
+        driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
+        print("   -> ¡Driver iniciado con éxito!", flush=True)
+        wait = WebDriverWait(driver, 20)
+        
         driver.get(LOGIN_URL)
         print("1. Buscando el formulario de inicio de sesión...", flush=True)
+        # El resto del código continúa aquí...
         iframe = wait.until(EC.presence_of_element_located((By.TAG_NAME, "iframe")))
         driver.switch_to.frame(iframe)
 
@@ -71,6 +76,7 @@ def run_booking_bot():
         
         wait.until(EC.presence_of_element_located((By.ID, "classSchedule-mainTable")))
         
+        target_date = get_target_date()
         print(f"3. Navegando hasta el día {target_date.strftime('%A, %d de %B')}...", flush=True)
         
         while True:
@@ -106,14 +112,31 @@ def run_booking_bot():
             print("\n❌ FALLO: No se encontró ninguna de las clases deseadas o no estaban disponibles.", flush=True)
 
     except Exception as e:
-        print(f"\n❌ ERROR GENERAL: No se pudo completar la reserva. Motivo: {e}", flush=True)
-        driver.save_screenshot('error_screenshot.png')
+        # Se ha mejorado el mensaje de error para que sea más claro
+        print(f"\n❌ ERROR GENERAL: No se pudo completar la reserva. Motivo: {str(e)}", flush=True)
+        if driver:
+            driver.save_screenshot('error_screenshot.png')
     finally:
         print("Cerrando bot.", flush=True)
-        driver.quit()
+        if driver:
+            driver.quit()
 
 if __name__ == "__main__":
-    if not USER_EMAIL or not USER_PASSWORD:
-        print("❌ Error: Las credenciales THFIT_USER y THFIT_PASS no están configuradas en los Secrets de GitHub.", flush=True)
-    else:
-        run_booking_bot()
+    log_file = open("bot_log.txt", "w")
+    original_stdout = sys.stdout
+    sys.stdout = log_file
+    try:
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print("====================================================")
+        print(f"== INICIO DEL SCRIPT: {now_str} ==")
+        print("====================================================")
+        if not USER_EMAIL or not USER_PASSWORD:
+            print("❌ Error: Las credenciales THFIT_USER y THFIT_PASS no están configuradas en los Secrets de GitHub.")
+        else:
+            run_booking_bot()
+    finally:
+        print("\n====================================================")
+        print("== FIN DEL SCRIPT ==")
+        print("====================================================")
+        sys.stdout = original_stdout
+        log_file.close()
