@@ -1,4 +1,4 @@
-# bot_reserva.py (versión con arranque de navegador robusto)
+# bot_reserva.py (versión final con "disfraz" de navegador)
 
 import os
 import sys
@@ -50,25 +50,29 @@ def run_booking_bot():
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    # --- NUEVO ARGUMENTO PARA ESTABILIDAD ---
-    options.add_argument("--disable-gpu") 
+    options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1920,1080")
+    # --- NUEVO "DISFRAZ" ---
+    # Hacemos que el bot se presente como un navegador Chrome normal de Windows.
+    options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36')
     
-    # --- NUEVOS MENSAJES DE DIAGNÓSTICO ---
     print("   -> Opciones de Chrome configuradas. Intentando iniciar el driver...", flush=True)
-    driver = None # Inicializar driver a None
+    driver = None
     try:
         driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
         print("   -> ¡Driver iniciado con éxito!", flush=True)
         wait = WebDriverWait(driver, 20)
         
+        print("   -> Intentando cargar la URL del sitio...", flush=True)
         driver.get(LOGIN_URL)
+        print("   -> ¡URL cargada con éxito!", flush=True)
+
         print("1. Buscando el formulario de inicio de sesión...", flush=True)
-        # El resto del código continúa aquí...
         iframe = wait.until(EC.presence_of_element_located((By.TAG_NAME, "iframe")))
         driver.switch_to.frame(iframe)
 
         print("2. Ingresando credenciales...", flush=True)
+        # ... el resto del código es idéntico ...
         wait.until(EC.presence_of_element_located((By.ID, "username"))).send_keys(USER_EMAIL)
         driver.find_element(By.ID, "password").send_keys(USER_PASSWORD)
         driver.find_element(By.ID, "login-button").click()
@@ -112,7 +116,6 @@ def run_booking_bot():
             print("\n❌ FALLO: No se encontró ninguna de las clases deseadas o no estaban disponibles.", flush=True)
 
     except Exception as e:
-        # Se ha mejorado el mensaje de error para que sea más claro
         print(f"\n❌ ERROR GENERAL: No se pudo completar la reserva. Motivo: {str(e)}", flush=True)
         if driver:
             driver.save_screenshot('error_screenshot.png')
